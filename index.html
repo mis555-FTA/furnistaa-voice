@@ -29,6 +29,7 @@
   .seg button.on{background:var(--green);color:var(--ivory);font-weight:600}
   textarea{width:100%;min-height:200px;resize:vertical;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px;font-size:16px;line-height:1.7}
   .interim{width:100%;font-size:14px;color:var(--muted);font-style:italic;min-height:20px}
+  .msg a{color:#7A2E1A;font-weight:600}
   .msg{width:100%;font-size:14px;line-height:1.5;color:#7A2E1A;background:#F6E3DA;border-radius:8px;padding:12px 14px}
   .acts{width:100%;display:flex;gap:10px}
   .btn{height:50px;padding:0 18px;border-radius:10px;border:1px solid var(--btnline);background:transparent;font-size:15px}
@@ -54,35 +55,52 @@
     <button type="button" data-lang="hi-IN">Hindi</button>
     <button type="button" data-lang="en-IN" data-alt="hinglish">Hinglish</button>
   </div>
-  <div class="msg" id="msg" hidden></div>
   <textarea id="text" aria-label="Transcript" placeholder="Your words appear here. You can correct them before sending."></textarea>
   <div class="interim" id="interim"></div>
+  <div class="msg" id="msg" role="alert" hidden></div>
   <div class="acts">
     <button class="btn" id="clear" type="button">Clear</button>
     <button class="btn done" id="done" type="button">Done — make pointers</button>
+  </div>
+  <div class="acts" id="fallback" hidden>
+    <a class="btn" id="goLink" href="#" style="flex:1;display:flex;align-items:center;justify-content:center;text-decoration:none;color:var(--green);font-weight:600">Open Pointers app with this text</a>
+    <button class="btn" id="copy" type="button">Copy text</button>
   </div>
 </main>
 
 <script>
 const $ = id => document.getElementById(id);
 const qs = new URLSearchParams(location.search);
-const RET = qs.get('return') || '';
-const RET_OK = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[\w-]+\/(exec|dev)$/.test(RET);
+const KEY = 'furnistaa_pointers_return';
+function cleanRet(u){
+  u = String(u || '').trim().split('#')[0].split('?')[0];
+  return /^https:\/\/script\.google\.com\//.test(u) ? u : '';
+}
+let RET = cleanRet(qs.get('return'));
+try {
+  if (RET) localStorage.setItem(KEY, RET);          // remember for next time
+  else RET = cleanRet(localStorage.getItem(KEY));   // opened directly → use the last app link
+} catch (_) {}
+const RET_OK = !!RET;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const R = { on:false, rec:null, secs:0, t0:0, tick:null, lastEvt:0, pendingBreak:false, lang: qs.get('lang') || 'en-IN' };
 
-function msg(t){ $('msg').hidden = !t; $('msg').textContent = t || ''; }
+function msg(t, html){
+  const m = $('msg'); m.hidden = !t;
+  if (html) m.innerHTML = t; else m.textContent = t || '';
+  if (t) m.scrollIntoView({ behavior:'smooth', block:'center' });
+}
 function pad(n){ return String(n).padStart(2,'0'); }
 function clock(s){ return pad(Math.floor(s/60)) + ':' + pad(s%60); }
 
 if (RET_OK) $('back').href = RET; else $('back').hidden = true;
-if (!RET_OK) msg('Open this page from the Pointers app (Speak pointers → mic) so your pointers can be sent back.');
+if (!RET_OK) msg('This page doesn’t know your Pointers app link yet. Open it once from the app (Speak pointers → mic) and it will remember it.');
 if (!SR) msg('Voice input isn’t supported in this browser. Use Chrome, Edge or Safari — or dictate with your keyboard’s mic into the box below.');
 document.querySelectorAll('#lang button').forEach(b => b.classList.toggle('on', b.dataset.lang === R.lang && !b.dataset.alt));
 
 function start(){
   if (!SR) return;
-  msg(RET_OK ? '' : $('msg').textContent);
+  if (RET_OK) msg('');
   const rec = new SR();
   rec.lang = R.lang; rec.continuous = true; rec.interimResults = true;
   R.pendingBreak = !!$('text').value.trim(); R.lastEvt = Date.now();
@@ -140,14 +158,33 @@ $('lang').addEventListener('click', e => {
 $('clear').addEventListener('click', () => { $('text').value = ''; R.secs = 0; $('time').textContent = '00:00'; });
 $('done').addEventListener('click', () => {
   const wasOn = R.on; stop();
+  $('done').disabled = true; $('done').textContent = 'Preparing…';
   setTimeout(() => {                                          // let the last phrase land
+    $('done').disabled = false; $('done').textContent = 'Done — make pointers';
     const t = $('text').value.trim();
     if (!t){ msg('Nothing recorded yet. Tap the mic and speak, or type in the box.'); return; }
-    if (!RET_OK){ msg('Open this page from the Pointers app so the pointers can be sent back.'); return; }
+    if (!RET_OK){
+      msg('Can’t send back: this page wasn’t opened from the Pointers app. Copy the text and paste it into the transcript box in the app, or open the recorder from the app’s mic button.');
+      $('fallback').hidden = false; $('goLink').hidden = true; return;
+    }
     const url = RET + '?t=' + encodeURIComponent(t.slice(0, 5000)) + '&secs=' + R.secs;
+    $('goLink').href = url; $('goLink').hidden = false;
     $('done').disabled = true; $('done').textContent = 'Sending…';
-    location.href = url;
-  }, wasOn ? 500 : 0);
+    msg('');
+    try { window.location.assign(url); } catch (_) {}
+    setTimeout(() => {                                        // still here? give a manual way through
+      $('done').disabled = false; $('done').textContent = 'Done — make pointers';
+      $('fallback').hidden = false;
+      msg('The app didn’t open automatically. Tap “Open Pointers app with this text”.');
+    }, 4000);
+  }, wasOn ? 600 : 0);
+});
+
+$('copy').addEventListener('click', () => {
+  const t = $('text').value;
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject())
+    .then(() => msg('Copied. Paste it into the transcript box in the Pointers app.'))
+    .catch(() => { $('text').select(); document.execCommand('copy'); msg('Copied. Paste it into the transcript box in the Pointers app.'); });
 });
 </script>
 </body>
